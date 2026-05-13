@@ -2,52 +2,13 @@ import torch
 from torch import nn
 import time
 
-from sklearn.model_selection import train_test_split
-
-
-def normalize(
-        data: torch.Tensor,
-        mean: torch.Tensor,
-        std: torch.Tensor
-):
-    return (data - mean) / std
-
-
-def real_units(
-        normalized_data: torch.Tensor,
-        mean: torch.Tensor,
-        std: torch.Tensor
-):
-    return normalized_data*std + mean
-
-
-def reduce_dataset(
-        X_data: torch.Tensor,
-        y_data: torch.Tensor,
-        random_state: int,
-        fraction: float = 0.1,
-):
-    _, X, _, y = train_test_split(
-        X_data, y_data, test_size=fraction, random_state=random_state
-    )
-    return X, y
-
-
-def compute_rmse(
-        y_pred: torch.Tensor,
-        y_true: torch.Tensor
-):
-    return (y_pred-y_true**2).mean().sqrt()
-
 
 class LinearRegression(nn.Module):
     def __init__(self, input_size=1):
         super().__init__()
-        self.linear1 = nn.Linear(input_size, 1)  # A single input and a single output
+        self.linear1 = nn.Linear(input_size, 1)
 
     def forward(self, x):
-        # This method is automatically executed when
-        # we call a object of this class
         x = self.linear1(x)
         return x
     
@@ -67,18 +28,39 @@ class simple_FCNN(nn.Module):
 
 
 class FCNN(nn.Module):
-    def __init__(self, input_size=1):
+    def __init__(
+            self, 
+            input_size=1,
+            n_hidden_layers=1,
+            n_neurons=16,
+            activation=nn.ReLU()
+    ):
         super().__init__()
-        self.linear1 = nn.Linear(input_size, 16)  # 8 inputs
-        self.linear2 = nn.Linear(16, 16)
-        self.linear3 = nn.Linear(16, 1)  # 8 outputs
 
-        self.relu = nn.ReLU()
+        self.n_hidden_layers = n_hidden_layers
+
+        self.linear_in = nn.Linear(input_size, n_neurons)
+        self.linear_hidden = nn.Linear(n_neurons, n_neurons)
+        self.linear_out = nn.Linear(n_neurons, 1)
+
+        self.activation = activation
 
     def forward(self, x):
-        x = self.relu(self.linear1(x))
-        x = self.relu(self.linear2(x))
-        x = self.linear3(x)
+        x = self.activation(self.linear_in(x))
+
+        if self.n_hidden_layers == 1:
+            x = self.activation(self.linear_hidden(x))
+        elif self.n_hidden_layers == 2:
+            x = self.activation(self.linear_hidden(x))
+            x = self.activation(self.linear_hidden(x))
+        elif self.n_hidden_layers == 3:
+            x = self.activation(self.linear_hidden(x))
+            x = self.activation(self.linear_hidden(x))
+            x = self.activation(self.linear_hidden(x))
+        else:
+            raise ValueError("Too many hidden layers (try 1, 2 or 3).")
+
+        x = self.linear_out(x)
         return x
     
 
@@ -139,16 +121,20 @@ def test_model(network, criterion, loader, device):
 
 
 def fit_model(network, criterion, optimizer, train_loader, test_loader, n_epochs, device):
-    """Train and validate the network"""
+    """Train and validate the network. Yields (epoch, train_losses, test_losses) each epoch."""
     train_losses, test_losses = [], []
     start_time = time.time()
-    for epoch in range(1, n_epochs + 1):
-        train_loss = train_model(network, criterion, train_loader, optimizer, device)
-        test_loss = test_model(network, criterion, test_loader, device)
-        train_losses.append(train_loss)
-        test_losses.append(test_loss)
-        print(f"epoch {epoch} completed")
-    end_time = time.time()
-    print(f"Training completed in {int(end_time - start_time)} seconds.")
 
-    return train_losses, test_losses
+    try:
+        for epoch in range(1, n_epochs + 1):
+            train_loss = train_model(network, criterion, train_loader, optimizer, device)
+            test_loss = test_model(network, criterion, test_loader, device)
+            train_losses.append(train_loss)
+            test_losses.append(test_loss)
+            print(f"Epoch {epoch} completed. Train loss: {train_loss}; test loss: {test_loss}.")
+
+            yield epoch, train_losses, test_losses
+
+    finally:
+        end_time = time.time()
+        print(f"Training completed in {int(end_time - start_time)} seconds.")
