@@ -4,13 +4,22 @@ from typing import Optional, Tuple, Union, Literal
 import os
 from dataclasses import asdict
 
-from m_star_predictor import FCNN
+from m_star_predictor import FCNN, FCNN_corrected
 
 import numpy as np
 import pandas as pd
 import torch
 
 from sklearn.model_selection import train_test_split
+
+
+def recover_M_from_dM(
+        dM: np.ndarray,
+        n_time_steps: int,
+        init_val: int = 0
+) -> np.ndarray:
+    M = np.nancumsum(dM.reshape(-1, n_time_steps), axis=1)
+    return np.pad(M, pad_width=((0,0),(1,0)), mode="constant", constant_values=init_val).flatten()
 
 
 def normalize(
@@ -59,8 +68,10 @@ class MStarPredictorConfig:
     feature_transforms: Optional[dict[str,Literal["sqrt", "log10"]]]
     target_name: str
     target_transform: Optional[Literal["sqrt", "log10"]]
-    n_neurons: int
-    n_hidden_layers: int
+    network: Literal["fcnn", "fcnn_corrected"]
+    n_neurons: Optional[int]
+    n_hidden_layers: Optional[int]
+    n_neurons_list: Optional[list[int]]
     learning_rate: float
     weight_decay: float
     activation: Literal["relu", "tanh"]
@@ -80,6 +91,41 @@ class MStarPredictorConfig:
     rmse: float
 
 
+@dataclass
+class MStarAutoregressivePredictorConfig:
+    dataset_name: str
+    dataset_filename: str
+    validation_dataset_name: str
+    validation_dataset_filename: str
+    weights_save_path: str
+    feature_names: list[str]
+    feature_transforms: Optional[dict[str,Literal["sqrt", "log10"]]]
+    target_name: str
+    target_transform: Optional[Literal["sqrt", "log10"]]
+    network: Literal["fcnn", "fcnn_corrected"]
+    n_neurons: Optional[int]
+    n_hidden_layers: Optional[int]
+    n_neurons_list: Optional[list[int]]
+    learning_rate: float
+    weight_decay: float
+    activation: Literal["relu", "tanh"]
+    loss: str
+    n_epochs: int
+    random_state: int
+    train_batch_size: int
+    test_batch_size: int
+    feature_mean: list[float]
+    feature_std: list[float]
+    target_mean: list[float]
+    target_std: list[float]
+    train_loss_trajectory: Optional[list[float]]
+    test_loss_trajectory: Optional[list[float]]
+    n_time_steps: Union[list[int], int]
+    n_time_steps_val: Union[list[int], int]
+    rmse: float
+    k: int
+
+
 def save_config_to_json(
         config: MStarPredictorConfig,
         predictor_dir: str
@@ -96,7 +142,9 @@ def prepare_data(
         feature_names: list[str],
         feature_transforms: Optional[dict[str,str]],
         target_name: str,
-        target_transform: Optional[str]
+        target_transform: Optional[str],
+        autoregressive: bool = False,
+        n_timesteps: Optional[int] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     
     X_transformed = transform_features(
@@ -109,6 +157,12 @@ def prepare_data(
 
     X = torch.tensor(np.array(X_transformed)).T.float()
     y = torch.tensor(y_transformed).reshape(-1,1).float()
+
+    if autoregressive:
+        assert n_timesteps is not None, "n_timesteps required for autoregressive datasets"
+        X = X.reshape(-1, n_timesteps, len(feature_names))
+        y = y.reshape(-1, n_timesteps, 1)
+
     return X, y
 
 
@@ -174,9 +228,13 @@ def get_predictions(
     )
 
     # TODO: rn hard coded FCNN but Linear and simple_FCNN should also be supported
-    network = FCNN(
-        input_size=len(config.feature_names), n_neurons=config.n_neurons, n_hidden_layers=config.n_hidden_layers, 
-        activation=activation)
+    if config.network == "fcnn":
+        network = FCNN(
+            input_size=len(config.feature_names), n_neurons=config.n_neurons, n_hidden_layers=config.n_hidden_layers, 
+            activation=activation)
+    elif config.network == "fcnn_corrected":
+        network = FCNN_corrected(
+            input_size=len(config.feature_names), n_neurons_list=config.n_neurons_list, activation=activation)
 
     state_dict = torch.load(config.weights_save_path, map_location=torch.device('cpu'))
     network.load_state_dict(state_dict)
@@ -205,3 +263,52 @@ def get_predictions(
         pass
 
     return X, y, X_val, y_val, fcnn_prediction, fcnn_prediction_val
+
+
+def get_mean_predictions(
+        training_data: pd.DataFrame,
+        validation_data: pd.DataFrame,
+        config: MStarPredictorConfig
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    
+    mean_feature_names = ["f", "u_star", "bl_rh18", "B"]
+    path_to_weights = "/home/mm6851/m_star_predictor/m_star_predictors/fcnn_mean_predictor_weights.pth"
+
+    data_directory = '../m_star_dataset'
+    dataset_name = 'ePBL_paper_expanded_2283_corrected'
+
+    mean_dataset_filename = f"{dataset_name}_mean_dataset_M_target.pt"
+    mean_data = torch.load(os.path.join(data_directory, mean_dataset_filename))
+
+    X, y = prepare_data(
+        dataframe=training_data, feature_names=mean_feature_names, feature_transforms={"": ""},
+        target_name=["M"], target_transform=config.target_transform
+    )
+
+    X_val, y_val = prepare_data(
+        dataframe=validation_data, feature_names=mean_feature_names, feature_transforms={"": ""},
+        target_name=["M"], target_transform=config.target_transform
+    )
+
+    # TODO: rn hard coded FCNN but Linear and simple_FCNN should also be supported
+    network = FCNN(
+        input_size=len(mean_feature_names), n_neurons=16, n_hidden_layers=1, 
+        activation=torch.nn.ReLU())
+
+    state_dict = torch.load(path_to_weights, map_location=torch.device('cpu'))
+    network.load_state_dict(state_dict)
+
+    X_m, y_m = mean_data.T[:,:4].float(), mean_data.T[:,-1].unsqueeze(1).float()
+
+    X_mp_mean = X_m.mean(dim=0)
+    X_mp_std = X_m.std(dim=0)
+    y_mp_mean = y_m.mean(dim=0)
+    y_mp_std = y_m.std(dim=0)
+
+    X_normalized = normalize(data=X, mean=X_mp_mean, std=X_mp_std)
+    mean_prediction = real_units(normalized_data=network(X_normalized), mean=y_mp_mean, std=y_mp_std)
+
+    X_val_normalized = normalize(data=X_val, mean=X_mp_mean, std=X_mp_std)
+    mean_prediction_val = real_units(normalized_data=network(X_val_normalized), mean=y_mp_mean, std=y_mp_std)
+
+    return mean_prediction, mean_prediction_val

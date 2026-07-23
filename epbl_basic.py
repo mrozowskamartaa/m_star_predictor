@@ -59,7 +59,7 @@ def calculate_Psi(
         H: Union[float, np.ndarray],
         c_psi: float = 0.67
 ) -> np.ndarray:
-    return (2 * m_star * u_star ** 3) / (c_psi * B * H + 2 * m_star * u_star**3)
+    return (2 * m_star * u_star ** 3) / (c_psi * abs(B) * H + 2 * m_star * u_star**3)
 
 
 def calculate_M(
@@ -69,7 +69,8 @@ def calculate_M(
         B: Union[float, np.ndarray],
         wb: np.ndarray,
         neutral_mode: Literal["N", "Nb"],
-        n_star: float = 0.066
+        n_star: float = 0.066,
+        testing: bool = False
 ) -> np.ndarray:
     neutral = np.where(np.logical_and(B > -1e-8, B < 1e-8))
     stabilizing = np.where(B > 1e-8)
@@ -109,14 +110,24 @@ def calculate_M(
     )
 
     M = np.empty(len(B))
+    mechanical = np.empty(len(B))
+    convective = np.empty(len(B))
+
     M[neutral] = m_star_neutral * u_star[neutral]**3
+    mechanical[neutral] = m_star_neutral * u_star[neutral]**3
     M[stabilizing] = m_star_stabilizing * u_star[stabilizing]**3
+    mechanical[stabilizing] = m_star_stabilizing * u_star[stabilizing]**3
     Psi = calculate_Psi(
         m_star=m_star_destabilizing,
         u_star=u_star[destabilizing],
         B=B[destabilizing],
         H=H[destabilizing]
     )
-    M[destabilizing] = m_star_destabilizing * Psi + n_star * wb[destabilizing]
+    M[destabilizing] = m_star_destabilizing * u_star[destabilizing]**3 * Psi + n_star * wb[destabilizing]
+    mechanical[destabilizing] = m_star_destabilizing * u_star[stabilizing]**3
+    convective[destabilizing] = n_star * wb[destabilizing]
 
-    return M
+    if testing:
+        return M, mechanical, convective, Psi
+    else:
+        return M
