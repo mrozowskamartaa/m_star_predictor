@@ -4,7 +4,7 @@ from typing import Optional, Tuple, Union, Literal
 import os
 from dataclasses import asdict
 
-from m_star_predictor import FCNN, FCNN_corrected
+from m_star_predictor import FCNN, FCNN_corrected, predict_autoregressive
 
 import numpy as np
 import pandas as pd
@@ -124,6 +124,7 @@ class MStarAutoregressivePredictorConfig:
     n_time_steps_val: Union[list[int], int]
     rmse: float
     k: int
+    predict_tendency: bool
 
 
 def save_config_to_json(
@@ -262,6 +263,67 @@ def get_predictions(
     else:
         pass
 
+    return X, y, X_val, y_val, fcnn_prediction, fcnn_prediction_val
+
+
+def get_autoregressive_predictions(
+        training_data: pd.DataFrame,
+        validation_data: pd.DataFrame,
+        config: MStarPredictorConfig
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+
+    if config.activation == "relu":
+        activation = torch.nn.ReLU()
+    elif config.activation == "tanh":
+        activation = torch.nn.Tanh()
+    else:
+        raise ValueError("Unsupported activation function (try 'relu' or 'tanh').")
+
+    X, y = prepare_data(
+        dataframe=training_data, feature_names=config.feature_names, feature_transforms=config.feature_transforms,
+        target_name=config.target_name, target_transform=None, autoregressive=True, n_timesteps=config.n_time_steps
+    )
+
+    X_val, y_val = prepare_data(
+        dataframe=validation_data, feature_names=config.feature_names, feature_transforms=config.feature_transforms,
+        target_name=config.target_name, target_transform=None, autoregressive=True, n_timesteps=config.n_time_steps_val
+    )
+
+    # TODO: rn hard coded FCNN but Linear and simple_FCNN should also be supported
+    if config.network == "fcnn":
+        network = FCNN(
+            input_size=len(config.feature_names), n_neurons=config.n_neurons, n_hidden_layers=config.n_hidden_layers, 
+            activation=activation)
+    elif config.network == "fcnn_corrected":
+        network = FCNN_corrected(
+            input_size=len(config.feature_names), n_neurons_list=config.n_neurons_list, activation=activation)
+
+    state_dict = torch.load(config.weights_save_path, map_location=torch.device('cpu'))
+    network.load_state_dict(state_dict)
+
+    X_mean = torch.tensor(config.feature_mean)
+    X_std = torch.tensor(config.feature_std)
+    y_mean = torch.tensor(config.target_mean)
+    y_std = torch.tensor(config.target_std)
+
+    X_normalized = normalize(data=X, mean=X_mean, std=X_std)
+    fcnn_prediction = real_units(predict_autoregressive(network, X_normalized, predict_tendency=config.predict_tendency), mean=y_mean, std=y_std)
+
+    X_val_normalized = normalize(data=X_val, mean=X_mean, std=X_std)
+    fcnn_prediction_val = real_units(predict_autoregressive(network, X_val_normalized, predict_tendency=config.predict_tendency), mean=y_mean, std=y_std)
+
+    if config.target_transform == "sqrt":
+        fcnn_prediction = fcnn_prediction**2
+        fcnn_prediction_val = fcnn_prediction_val**2
+    elif config.target_transform == "log10":
+        fcnn_prediction = 10**fcnn_prediction
+        fcnn_prediction_val = 10**fcnn_prediction_val
+    elif config.target_transform == "log":
+        fcnn_prediction = np.exp(fcnn_prediction)-1
+        fcnn_prediction_val = np.exp(fcnn_prediction_val)-1
+    else:
+        pass
+    
     return X, y, X_val, y_val, fcnn_prediction, fcnn_prediction_val
 
 

@@ -80,89 +80,83 @@ def fit_model(network, criterion, optimizer, train_loader, test_loader, n_epochs
         print(f"Training completed in {int(end_time - start_time)} seconds.")
 
 
-def train_autoregressive(network, criterion, loader, optimizer, device, k=4, n_ar=1, modified_mse=False):
+def _step(network, x, n_ar, predict_tendency):
+    """One forward pass. Returns the next state M (batch, n_ar)."""
+    out = network(x)
+    return x[:, :n_ar] + out if predict_tendency else out
+
+
+def train_autoregressive(network, criterion, loader, optimizer, device,
+                         k=4, n_ar=1, predict_tendency=False):
     network.to(device)
     network.train()
-
-    total_loss, n_steps_total = 0.0, 0
+    total_loss, n_batches = 0.0, 0
 
     for batch_x, batch_y in loader:
         batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-        seq_len = batch_x.shape[1]
+        B, T, F = batch_x.shape
+        n_win = T // k
+        T_trunc = n_win * k                                   # drop the tail if T % k != 0
 
-        x = batch_x[:, 0, 1:] if modified_mse else batch_x[:, 0, :]     # true IC + forcing at step 0
+        xw = batch_x[:, :T_trunc, :].reshape(B * n_win, k, F)
+        yw = batch_y[:, :T_trunc, :].reshape(B * n_win, k, n_ar)
+
+        x = xw[:, 0, :]
+        loss = torch.tensor(0.0, device=device)
+        for j in range(k):
+            y = _step(network, x, n_ar, predict_tendency)
+            loss = loss + criterion(y, yw[:, j, :])           # scalar each time
+            if j + 1 < k:
+                x = torch.cat([y, xw[:, j + 1, n_ar:]], dim=-1)
+
         optimizer.zero_grad()
-        chunk_loss = torch.tensor(0.0, device=device)
-        steps_in_chunk = 0
+        (loss / k).backward()
+        optimizer.step()
 
-        for t in range(seq_len):
-            y = network(x)
-            if modified_mse:                                   # (batch, n_ar)
-                chunk_loss = chunk_loss + criterion(y, batch_x[:, t, :], 0, 1)
-            else:
-                chunk_loss = chunk_loss + criterion(y, batch_y[:, t, :])
-            steps_in_chunk += 1
+        total_loss += (loss / k).item()                       # mean per-step MSE, per batch
+        n_batches += 1
 
-            if (t + 1) % k == 0 or t == seq_len - 1:
-                (chunk_loss / steps_in_chunk).backward()
-                optimizer.step()                            # backward -> step -> zero grad needs to be understood
-                optimizer.zero_grad()
-
-                total_loss += chunk_loss.item()
-                n_steps_total += steps_in_chunk
-
-                chunk_loss = torch.tensor(0.0, device=device)
-                steps_in_chunk = 0
-                y = y.detach()                               # cut graph between chunks
-
-            if t + 1 < seq_len:
-                x = torch.cat([y, batch_x[:, t + 1, n_ar:]], dim=-1)    # here is the choice of state vs past vs future for other features
-
-    return total_loss / n_steps_total
+    return total_loss / n_batches
 
 
-def predict_autoregressive(network, batch_x, n_ar=1):
-    """Free rollout over the full sequence. batch_x: (batch, seq_len, n_features)."""
+def predict_autoregressive(network, batch_x, n_ar=1, predict_tendency=False):
+    """Free rollout. batch_x: (batch, seq_len, n_ar + n_forcings)."""
     seq_len = batch_x.shape[1]
     x = batch_x[:, 0, :]
     preds = []
 
     for t in range(seq_len):
-        y = network(x)
+        y = _step(network, x, n_ar, predict_tendency)
         preds.append(y)
         if t + 1 < seq_len:
             x = torch.cat([y, batch_x[:, t + 1, n_ar:]], dim=-1)
 
-    return torch.stack(preds, dim=1)      # (batch, seq_len, n_ar)
+    return torch.stack(preds, dim=1)      # (batch, seq_len, n_ar) -- states, not tendencies
 
 
-def test_autoregressive(network, criterion, loader, device, n_ar=1, modified_mse=False):
+def test_autoregressive(network, criterion, loader, device, n_ar=1, predict_tendency=False):
     network.to(device)
     network.eval()
-
     test_loss = 0.0
+
     with torch.no_grad():
         for batch_x, batch_y in loader:
             batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            if modified_mse:
-                prediction = predict_autoregressive(network, batch_x[:, :, 1:], n_ar=n_ar)
-                test_loss += criterion(prediction, batch_x, 0).item()
-            else:
-                prediction = predict_autoregressive(network, batch_x, n_ar=n_ar)
-                test_loss += criterion(prediction, batch_y).item()
+            prediction = predict_autoregressive(network, batch_x, n_ar, predict_tendency)
+            test_loss += criterion(prediction, batch_y).item()
 
     return test_loss / len(loader)
 
 
 def fit_autoregressive(network, criterion, optimizer, train_loader, test_loader, 
-                       n_epochs, device, k=4, n_ar=1, modified_mse=False):
+                       n_epochs, device, k=4, n_ar=1, predict_tendency=False):
     train_losses, test_losses = [], []
     start_time = time.time()
 
     try:
         for epoch in range(1, n_epochs + 1):
-            train_loss = train_autoregressive(network, criterion, train_loader, optimizer, device, k, n_ar, modified_mse)
-            test_loss = test_autoregressive(network, criterion, test_loader, device, n_ar, modified_mse)
+            train_loss = train_autoregressive(network, criterion, train_loader, optimizer, device, k, n_ar, predict_tendency)
+            test_loss = test_autoregressive(network, criterion, test_loader, device, n_ar, predict_tendency)
             train_losses.append(train_loss)
             test_losses.append(test_loss)
             print(f"Epoch {epoch} completed. Train loss: {train_loss}; test loss: {test_loss}.")
@@ -172,19 +166,6 @@ def fit_autoregressive(network, criterion, optimizer, train_loader, test_loader,
     finally:
         end_time = time.time()
         print(f"Training completed in {int(end_time - start_time)} seconds.")
-
-
-class MSELoss_new(MSELoss):
-    def forward(
-            self, 
-            dM: torch.Tensor,
-            x: torch.Tensor,
-            i_target: int = 0,
-            i_M: int = 1
-    ) -> torch.Tensor:
-        target = x[:, :, i_target]
-        input = x[:, :, i_M] + dM
-        return ((input - target) ** 2).mean()
 
 
 class LinearRegression(nn.Module):
