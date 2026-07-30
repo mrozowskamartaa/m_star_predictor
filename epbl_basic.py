@@ -124,7 +124,7 @@ def calculate_M(
         H=H[destabilizing]
     )
     M[destabilizing] = m_star_destabilizing * u_star[destabilizing]**3 * Psi + n_star * wb[destabilizing]
-    mechanical[destabilizing] = m_star_destabilizing * u_star[stabilizing]**3
+    mechanical[destabilizing] = m_star_destabilizing * u_star[destabilizing]**3
     convective[destabilizing] = n_star * wb[destabilizing]
 
     if testing:
