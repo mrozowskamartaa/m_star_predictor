@@ -43,23 +43,32 @@ OMEGA = 2 * np.pi / 24 / 60 / 60
 RHO0, G, ALPHA, CP = 1027.0, 9.81, 2e-4, 4e3
 
 
-def calculate_f(latitude):
+def calculate_f(latitude: float) -> float:
     return 2 * OMEGA * np.sin(np.pi * np.asarray(latitude) / 180)
 
 
-def calculate_T(latitude):
+def calculate_T(latitude: float) -> float:
     return 2 * np.pi / calculate_f(latitude)
 
 
-def compute_u_star(tau, rho=RHO0):
+def compute_u_star(
+        tau: float,
+        rho: float = RHO0
+    ) -> float:
     return (np.asarray(tau) / rho) ** 0.5
 
 
-def buoyancy_flux(heat_flux, rho=RHO0, g=G, alpha=ALPHA, cp=CP):
+def buoyancy_flux(
+        heat_flux: Union[np.ndarray, float], 
+        rho: float = RHO0, 
+        g: float = G, 
+        alpha: float = ALPHA, 
+        cp: float = CP
+    ) -> Union[np.ndarray, float]:
     return g * alpha * np.asarray(heat_flux) / (rho * cp)
 
 
-def case_forcings(case_dict):
+def case_forcings(case_dict: dict) -> dict:
     """Per-case scalar forcings from a GOTM training-set case dictionary."""
     hf = np.array([c["heat_flux"] for c in case_dict.values()])
     tau = np.array([c["tx"] for c in case_dict.values()])
@@ -73,12 +82,18 @@ def case_forcings(case_dict):
 # --------------------------------------------------------------------------- #
 # Dataset assembly / IO
 # --------------------------------------------------------------------------- #
-def assemble_dataset(scalars, profiles=None, depth=None, attrs=None):
+def assemble_dataset(
+        scalars: dict, 
+        profiles: dict = None, 
+        depth: np.ndarray = None, 
+        attrs: dict = None
+    ) -> xr.Dataset:
     """Build an xr.Dataset from named arrays.
 
     scalars:  name -> array of shape (case,) or (case, time)
     profiles: name -> array of shape (case, time, depth)
     depth:    1-D depth coordinate (required iff profiles given)
+    attrs:    metadata
     """
     data_vars = {}
     for name, arr in scalars.items():
@@ -245,11 +260,11 @@ class FeatureSpec:
     transform: Optional[str] = None
 
     @property
-    def label(self):
+    def label(self) -> str:
         if self.lag > 0:
-            return f"{self.name}_lag{self.lag}"
+            return f"{self.name}_i-{self.lag}"
         if self.lag < 0:
-            return f"{self.name}_fut{-self.lag}"
+            return f"{self.name}_i+{-self.lag}"
         return self.name
 
 
