@@ -32,6 +32,15 @@ Shared primitives live in `metrics.py`; the algebraic ePBL baseline in
   - `AutoregressivePredictor` = rollout (predicted state fed back).
 - **Lagged quantities are derived, not stored.** `FeatureSpec(name, lag, transform)`
   lags along the time axis: `lag=+1` → x_i-1, `lag=-1` → x_i+1.
+- **Two ways to work in tendency space, deliberately distinct.**
+  `predict_tendency` is a *residual skip in `_step`* (net predicts an increment
+  added to the state channel; scored in state space; needs `n_ar ≥ 1`). On a
+  persistent series this collapses to persistence, because the increment is tiny
+  once normalized by `std(M)`. `FeatureSelector(target_tendency=True)` instead makes
+  the *target* the increment `dM = M_{i+1}−M_i`, scored in tendency space and thus
+  normalized by `std(dM)`, then reconstructs a state trajectory by cumulative sum
+  (`experiment.integrate_tendency`) at evaluation — so drift is visible. The two
+  flags are mutually exclusive.
 - **One `PredictorConfig`** describes any run (`mode`, `predict_tendency`, `n_ar`,
   `k` are fields). `Registry` lists runs; `restore()` returns a `Prediction`.
 - **`Prediction` is the analysis object.** Neural predictors, `epbl_prediction`,

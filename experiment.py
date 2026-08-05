@@ -77,6 +77,15 @@ class PredictorConfig:
     n_cases_val: int
     rmse: float
     notes: str = ""
+    target_tendency: bool = False   # train on dM, reconstruct state by cumulative sum
+
+    def __post_init__(self):
+        if self.target_tendency and self.predict_tendency:
+            raise ValueError(
+                "target_tendency (dM target, integrated afterwards) and "
+                "predict_tendency (residual skip in _step) are mutually exclusive; "
+                "set predict_tendency=False for a dM target."
+            )
 
     # -- convenience -------------------------------------------------------- #
     @property
@@ -94,15 +103,17 @@ class PredictorConfig:
             target=_specs(self.target),
             mode=mode or self.selector_mode,
             drop_zero_std=False,     # columns already fixed at train time
+            target_tendency=self.target_tendency,
         )
 
     def build_network(self):
         act = {"relu": nn.ReLU(), "tanh": nn.Tanh()}[self.activation]
         n_in = len(self.feature_names)
+        n_out = len(self.target)
         if self.network == "fcnn":
-            return FCNN(n_in, self.n_neurons_list, act, output_size=self.n_ar)
+            return FCNN(n_in, self.n_neurons_list, act, output_size=n_out)
         if self.network == "linear":
-            return LinearRegression(n_in, self.n_ar)
+            return LinearRegression(n_in, n_out)
         raise ValueError(f"Unknown network {self.network!r}.")
 
     # -- IO ----------------------------------------------------------------- #
@@ -195,6 +206,17 @@ class Prediction:
 # --------------------------------------------------------------------------- #
 # Restore a trained predictor
 # --------------------------------------------------------------------------- #
+def integrate_tendency(dM, m0):
+    """Free-running state reconstruction: M[t] = m0 + sum_{j<t} dM[j].
+
+    dM: (n_cases, n_time, n_tar) predicted increments; m0: (n_cases, 1, n_tar)
+    initial state. Returns states (n_cases, n_time + 1, n_tar) -- errors in dM
+    accumulate, so drift is visible.
+    """
+    zero = torch.zeros_like(dM[:, :1, :])
+    return m0 + torch.cat([zero, torch.cumsum(dM, dim=1)], dim=1)
+
+
 def _predict_split(cfg, path, net, device):
     ds = xr.open_dataset(path)
     res = cfg.to_selector().select(ds)
@@ -210,10 +232,19 @@ def _predict_split(cfg, path, net, device):
         else:
             out = _step(net, Xn.to(device), cfg.n_ar, cfg.predict_tendency).cpu()
 
+    nc = res.n_cases
+    if cfg.target_tendency:
+        # network predicts dM (real units); integrate from the true initial state
+        dM = real_units(out, tmean, tstd).reshape(nc, res.n_time, -1)
+        state = res.y_state                                   # (nc, L, n_tar), real state
+        pred = integrate_tendency(dM, state[:, :1, :])
+        return Split(truth=state[..., 0], pred=pred[..., 0],
+                     n_time=state.shape[1], n_cases=nc)
+
     pred = invert_transform(real_units(out, tmean, tstd), cfg.target_transform)
     truth = invert_transform(res.y, cfg.target_transform)
 
-    nc, nt = res.n_cases, res.n_time
+    nt = res.n_time
     return Split(truth=truth.reshape(nc, nt), pred=pred.reshape(nc, nt),
                  n_time=nt, n_cases=nc,
                  features=res.X.reshape(nc, nt, -1), feature_names=res.feature_names)

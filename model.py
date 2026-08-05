@@ -67,7 +67,16 @@ def _step(network, x, n_ar, predict_tendency):
     state channels x[:, :n_ar]; otherwise it is the next state directly.
     """
     out = network(x)
-    return x[:, :n_ar] + out if predict_tendency else out
+    if not predict_tendency:
+        return out
+    if n_ar != out.shape[-1]:
+        raise ValueError(
+            f"predict_tendency needs one state channel per output "
+            f"(n_ar={n_ar}, output width={out.shape[-1]}): the residual is added to "
+            f"x[:, :n_ar]. Put the previous-state variable(s) in ar_features, or use "
+            f"FeatureSelector(target_tendency=True) to train on dM directly."
+        )
+    return x[:, :n_ar] + out
 
 
 def rollout(network, seq, n_ar=1, predict_tendency=False):
