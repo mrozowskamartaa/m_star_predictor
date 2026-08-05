@@ -137,7 +137,7 @@ def test_tendency_restore_reconstructs_by_cumsum(tmp_path):
     ds_path = tmp_path / "mock.nc"
     ds.to_netcdf(ds_path)
 
-    sel = FeatureSelector([], [FeatureSpec("forcing")], FeatureSpec("M"),
+    sel = FeatureSelector([], [FeatureSpec("forcing")], FeatureSpec("M", lag=-1),
                           mode="parallel", target_tendency=True)
     res = sel.select(ds)
     fmean, fstd = compute_norm_stats(res.X.numpy())
@@ -152,7 +152,7 @@ def test_tendency_restore_reconstructs_by_cumsum(tmp_path):
     cfg = _base_config(
         run_id="run", dataset_path=str(ds_path), val_dataset_path=str(ds_path),
         ar_features=[], forcings=[dict(name="forcing", lag=0, transform=None)],
-        target=[dict(name="M", lag=0, transform=None)], feature_names=res.feature_names,
+        target=[dict(name="M", lag=-1, transform=None)], feature_names=res.feature_names,
         n_ar=0, predict_tendency=False, target_tendency=True,
         feature_mean=fmean.tolist(), feature_std=fstd.tolist(),
         target_mean=tmean.tolist(), target_std=tstd.tolist(),

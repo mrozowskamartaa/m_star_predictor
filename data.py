@@ -58,7 +58,7 @@ from __future__ import annotations
 import os
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -560,12 +560,13 @@ class FeatureSelector:
                     -> (case, time, feature).
     drop_zero_std : drop non-ar columns with zero variance (they can't be
                     normalized); a zero-variance ar/target column is an error.
-    target_tendency : train on the forward difference dM = M_{i+1} - M_i instead
-                    of the state. The target (given at lag=0) is differenced along
-                    time and inputs are aligned to the increment; the state is
-                    reconstructed later by cumulative sum (see experiment.restore /
-                    integrate_tendency). ``y_state`` on the result carries the
-                    undifferenced state trajectory (real units) for that integration.
+    target_tendency : train on the increment dM = M_{i+1} - M_i instead of the
+                    state. The target is the next state (same convention as AR, e.g.
+                    FeatureSpec("M", lag=-1)); dM is target(lag) - target(lag+1). The
+                    state is reconstructed later by cumulative sum (see
+                    experiment.restore / integrate_tendency). ``y_state`` on the
+                    result carries the state trajectory (real units, length n_time+1)
+                    for that integration.
     """
 
     def __init__(self, ar_features, forcings, target,
@@ -582,6 +583,8 @@ class FeatureSelector:
     # -- time-lag window shared by features and targets --------------------- #
     def _window(self, n_time):
         lags = [s.lag for s in self.ar + self.forcings + self.targets]
+        if self.target_tendency:
+            lags += [t.lag + 1 for t in self.targets]   # previous state for dM = y(lag) - y(lag+1)
         lo = max([0] + [l for l in lags if l > 0])
         hi = n_time + min([0] + [l for l in lags if l < 0])
         if hi <= lo:
@@ -634,11 +637,13 @@ class FeatureSelector:
 
         y_state = None
         if self.target_tendency:
-            if Y.shape[1] < 2:
-                raise ValueError("target_tendency needs a time axis with >= 2 steps.")
-            y_state = Y                                         # state trajectory (case, L, n_tar)
-            Y = Y[:, 1:, :] - Y[:, :-1, :]                      # forward difference dM
-            X = X[:, :-1, :]                                    # align inputs to the increment
+            # Y (target at its lag) is the next state, e.g. M_{i+1} for lag=-1.
+            # The current state is the same variable one step back (lag+1); their
+            # difference is the increment dM_i, aligned to the inputs at time i.
+            prev_cols = self._columns(ds, [replace(t, lag=t.lag + 1) for t in self.targets], lo, hi)
+            prev = np.stack([c[1] for c in prev_cols], axis=-1)  # current state (case, L, n_tar)
+            y_state = np.concatenate([prev, Y[:, -1:, :]], axis=1)  # states M_lo..M_hi (L+1)
+            Y = Y - prev                                            # dM (case, L, n_tar)
             target_names = [f"d{n}" for n in target_names]
 
         X, feat_names, n_ar, dropped = self._validate(X, feat_names, n_ar, Y, target_names)

@@ -68,27 +68,28 @@ def test_lag_window_and_alignment(ds):
             assert res.y[c, tau, 0].item() == M[c, tau + 2]      # M_i+1
 
 
-def test_target_tendency_is_forward_difference(ds):
-    # M[c,t]=c*100+t  ->  dM = M_{i+1}-M_i == 1 everywhere; inputs drop the last step
+def test_target_tendency_is_next_minus_current(ds):
+    # M[c,t]=c*100+t  ->  dM = M_{i+1}-M_i == 1 everywhere. Target is the next state
+    # (lag=-1); inputs at time i pair with the increment over [i, i+1].
     sel = FeatureSelector(
         ar_features=[], forcings=[FeatureSpec("forcing")],
-        target=FeatureSpec("M", lag=0), mode="sequence", target_tendency=True,
+        target=FeatureSpec("M", lag=-1), mode="sequence", target_tendency=True,
     )
     res = sel.select(ds)
-    assert res.n_time == N_TIME - 1                       # one step consumed by the diff
+    assert res.n_time == N_TIME - 1                       # one future step consumed
     assert res.X.shape == (N_CASES, N_TIME - 1, 1)
     assert res.y.shape == (N_CASES, N_TIME - 1, 1)
-    assert res.target_names == ["dM"]
+    assert res.target_names == ["dM_i+1"]
     assert torch.allclose(res.y, torch.ones_like(res.y))
-    # y_state carries the undifferenced trajectory (length L) for reconstruction
+    # y_state is the full state trajectory (length n_time+1) for reconstruction
     assert res.y_state.shape == (N_CASES, N_TIME, 1)
     assert torch.allclose(res.y_state[:, :, 0], torch.tensor(ds.M.values).float())
-    # inputs align to the increment (drop the final timestep)
+    # inputs at time i align to the increment over [i, i+1]
     assert torch.allclose(res.X[:, :, 0], torch.tensor(ds.forcing.values[:, :-1]).float())
 
 
 def test_target_tendency_parallel_flattens(ds):
-    sel = FeatureSelector([], [FeatureSpec("forcing")], FeatureSpec("M"),
+    sel = FeatureSelector([], [FeatureSpec("forcing")], FeatureSpec("M", lag=-1),
                           mode="parallel", target_tendency=True)
     res = sel.select(ds)
     assert res.X.shape == (N_CASES * (N_TIME - 1), 1)
